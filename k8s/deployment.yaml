@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: node-health-watcher
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: node-health-watcher
+  template:
+    metadata:
+      labels:
+        app: node-health-watcher
+    spec:
+      serviceAccountName: node-health-watcher
+      containers:
+        - name: node-health-watcher
+          image: ghcr.io/jmake-space/node-health-watcher:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: node-health-watcher-config
+            - secretRef:
+                name: node-health-watcher-secret
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
