@@ -62,10 +62,10 @@ jobs:
           set -euo pipefail
           PORT="${SSH_PORT:-22}"
           ssh -p "$PORT" -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} "
-            kubectl apply -f /tmp/node-health-watcher/namespace.yaml &&
-            kubectl apply -f /tmp/node-health-watcher/rbac.yaml &&
-            kubectl apply -f /tmp/node-health-watcher/configmap.yaml &&
-            kubectl apply -f /tmp/node-health-watcher/deployment.yaml &&
-            kubectl -n monitoring set image deployment/node-health-watcher node-health-watcher=${IMAGE_REPO}:${IMAGE_TAG} &&
-            kubectl -n monitoring rollout status deployment/node-health-watcher --timeout=120s
+            sudo k3s kubectl apply -f /tmp/node-health-watcher/namespace.yaml &&
+            sudo k3s kubectl apply -f /tmp/node-health-watcher/rbac.yaml &&
+            sudo k3s kubectl apply -f /tmp/node-health-watcher/configmap.yaml &&
+            sudo k3s kubectl apply -f /tmp/node-health-watcher/deployment.yaml &&
+            sudo k3s kubectl -n monitoring set image deployment/node-health-watcher node-health-watcher=${IMAGE_REPO}:${IMAGE_TAG} &&
+            sudo k3s kubectl -n monitoring rollout status deployment/node-health-watcher --timeout=120s
           "
