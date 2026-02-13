@@ -7,32 +7,13 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   deploy:
     runs-on: self-hosted
-    env:
-      IMAGE_REPO: ghcr.io/jmake-space/node-health-watcher
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push image
-        env:
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          docker build -t ${IMAGE_REPO}:${IMAGE_TAG} -t ${IMAGE_REPO}:latest .
-          docker push ${IMAGE_REPO}:${IMAGE_TAG}
-          docker push ${IMAGE_REPO}:latest
 
       - name: Configure SSH key
         run: |
@@ -51,10 +32,10 @@ jobs:
           PORT="${SSH_PORT:-22}"
           ssh -p "$PORT" -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} 'mkdir -p /tmp/node-health-watcher'
           scp -P "$PORT" -o StrictHostKeyChecking=no k8s/*.yaml ${SSH_USER}@${SSH_HOST}:/tmp/node-health-watcher/
+          scp -P "$PORT" -o StrictHostKeyChecking=no src/watcher/main.py requirements.txt ${SSH_USER}@${SSH_HOST}:/tmp/node-health-watcher/
 
       - name: Deploy manifests
         env:
-          IMAGE_TAG: ${{ github.sha }}
           SSH_HOST: ${{ secrets.CONTROL_PLANE_HOST }}
           SSH_USER: ${{ secrets.CONTROL_PLANE_USER }}
           SSH_PORT: ${{ secrets.CONTROL_PLANE_PORT }}
@@ -65,7 +46,10 @@ jobs:
             sudo k3s kubectl apply -f /tmp/node-health-watcher/namespace.yaml &&
             sudo k3s kubectl apply -f /tmp/node-health-watcher/rbac.yaml &&
             sudo k3s kubectl apply -f /tmp/node-health-watcher/configmap.yaml &&
+            sudo k3s kubectl -n monitoring create configmap node-health-watcher-code \
+              --from-file=main.py=/tmp/node-health-watcher/main.py \
+              --from-file=requirements.txt=/tmp/node-health-watcher/requirements.txt \
+              --dry-run=client -o yaml | sudo k3s kubectl apply -f - &&
             sudo k3s kubectl apply -f /tmp/node-health-watcher/deployment.yaml &&
-            sudo k3s kubectl -n monitoring set image deployment/node-health-watcher node-health-watcher=${IMAGE_REPO}:${IMAGE_TAG} &&
             sudo k3s kubectl -n monitoring rollout status deployment/node-health-watcher --timeout=120s
           "
