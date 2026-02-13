@@ -16,13 +16,21 @@ spec:
       serviceAccountName: node-health-watcher
       containers:
         - name: node-health-watcher
-          image: ghcr.io/jmake-space/node-health-watcher:latest
-          imagePullPolicy: Always
+          image: python:3.11-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - sh
+            - -c
+          args:
+            - pip install --no-cache-dir -r /app/requirements.txt && python /app/main.py
           envFrom:
             - configMapRef:
                 name: node-health-watcher-config
             - secretRef:
                 name: node-health-watcher-secret
+          volumeMounts:
+            - name: watcher-code
+              mountPath: /app
           resources:
             requests:
               cpu: 50m
@@ -30,3 +38,7 @@ spec:
             limits:
               cpu: 250m
               memory: 256Mi
+      volumes:
+        - name: watcher-code
+          configMap:
+            name: node-health-watcher-code
