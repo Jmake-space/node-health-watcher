@@ -21,6 +21,9 @@ class NodeHealthWatcher:
         self.airflow_dag_id = os.getenv("AIRFLOW_DAG_ID", "node_health_alert")
         self.airflow_username = os.getenv("AIRFLOW_USERNAME", "")
         self.airflow_password = os.getenv("AIRFLOW_PASSWORD", "")
+        self.gha_dispatch_url = os.getenv("GHA_DISPATCH_URL", "").strip()
+        self.gha_token = os.getenv("GHA_TOKEN", "").strip()
+        self.gha_event_type = os.getenv("GHA_EVENT_TYPE", "k3s-node-alert").strip()
         self.watch_debounce_seconds = int(os.getenv("WATCH_DEBOUNCE_SECONDS", "5"))
         self.airflow_max_retries = int(os.getenv("AIRFLOW_MAX_RETRIES", "5"))
         self.airflow_timeout_seconds = int(os.getenv("AIRFLOW_TIMEOUT_SECONDS", "10"))
@@ -170,6 +173,45 @@ class NodeHealthWatcher:
 
         return False
 
+    def trigger_github_dispatch(self, payload: Dict[str, str]) -> bool:
+        if not self.gha_dispatch_url or not self.gha_token:
+            self.log_event("github_dispatch_skipped_missing_config", payload=payload)
+            return False
+
+        body = {
+            "event_type": self.gha_event_type,
+            "client_payload": payload,
+        }
+
+        try:
+            response = requests.post(
+                self.gha_dispatch_url,
+                headers={
+                    "Accept": "application/vnd.github+json",
+                    "Authorization": f"token {self.gha_token}",
+                },
+                json=body,
+                timeout=self.airflow_timeout_seconds,
+            )
+            if 200 <= response.status_code < 300:
+                self.log_event(
+                    "github_dispatch_triggered",
+                    status_code=response.status_code,
+                    url=self.gha_dispatch_url,
+                    event_type=self.gha_event_type,
+                )
+                return True
+            self.log_event(
+                "github_dispatch_failed",
+                status_code=response.status_code,
+                response=response.text[:500],
+                url=self.gha_dispatch_url,
+            )
+            return False
+        except Exception as exc:
+            self.log_event("github_dispatch_error", error=str(exc), url=self.gha_dispatch_url)
+            return False
+
     def flush_if_due(self, force: bool = False) -> None:
         if not self.pending_down and not self.pending_recovered:
             return
@@ -178,7 +220,9 @@ class NodeHealthWatcher:
             return
 
         payload = self.build_payload()
-        self.trigger_airflow(payload)
+        airflow_ok = self.trigger_airflow(payload)
+        gha_ok = self.trigger_github_dispatch(payload)
+        self.log_event("flush_dispatched", airflow_ok=airflow_ok, github_dispatch_ok=gha_ok, payload=payload)
 
         self.pending_down.clear()
         self.pending_recovered.clear()

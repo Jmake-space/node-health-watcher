@@ -1,6 +1,6 @@
 # node-health-watcher
 
-Event-driven Kubernetes node readiness watcher that triggers Airflow DAG runs when Node `Ready` condition transitions are detected.
+Event-driven Kubernetes node readiness watcher that triggers Airflow DAG runs and/or GitHub `repository_dispatch` events when Node `Ready` condition transitions are detected.
 
 ## What it does
 
@@ -11,6 +11,7 @@ Event-driven Kubernetes node readiness watcher that triggers Airflow DAG runs wh
   - `resolved`: `Ready!=True -> Ready=True`
   - `mixed`: both transitions observed in debounce window
 - Triggers Airflow DAG run at `/api/v1/dags/<dag_id>/dagRuns` with `conf` payload.
+- Triggers GitHub dispatch at `/repos/<org>/<repo>/dispatches` for downstream alert workflows.
 - Retries Airflow API calls with bounded exponential backoff.
 
 ## Payload (`conf`)
@@ -37,6 +38,9 @@ Environment variables:
 - `AIRFLOW_DAG_ID` (default `node_health_alert`)
 - `AIRFLOW_USERNAME`
 - `AIRFLOW_PASSWORD`
+- `GHA_DISPATCH_URL` (example: `https://api.github.com/repos/Jmake-space/homelab-actions/dispatches`)
+- `GHA_EVENT_TYPE` (default `k3s-node-alert`)
+- `GHA_TOKEN` (token allowed to call repository dispatch)
 - `WATCH_DEBOUNCE_SECONDS` (default `5`)
 - `AIRFLOW_MAX_RETRIES` (default `5`)
 - `AIRFLOW_TIMEOUT_SECONDS` (default `10`)
