@@ -1,0 +1,71 @@
+name: Deploy Node Health Watcher
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    env:
+      IMAGE_REPO: ghcr.io/jmake-space/node-health-watcher
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build -t ${IMAGE_REPO}:${IMAGE_TAG} -t ${IMAGE_REPO}:latest .
+          docker push ${IMAGE_REPO}:${IMAGE_TAG}
+          docker push ${IMAGE_REPO}:latest
+
+      - name: Configure SSH key
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.CONTROL_PLANE_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Copy manifests to control-plane
+        env:
+          SSH_HOST: ${{ secrets.CONTROL_PLANE_HOST }}
+          SSH_USER: ${{ secrets.CONTROL_PLANE_USER }}
+          SSH_PORT: ${{ secrets.CONTROL_PLANE_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"
+          ssh -p "$PORT" -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} 'mkdir -p /tmp/node-health-watcher'
+          scp -P "$PORT" -o StrictHostKeyChecking=no k8s/*.yaml ${SSH_USER}@${SSH_HOST}:/tmp/node-health-watcher/
+
+      - name: Deploy manifests
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+          SSH_HOST: ${{ secrets.CONTROL_PLANE_HOST }}
+          SSH_USER: ${{ secrets.CONTROL_PLANE_USER }}
+          SSH_PORT: ${{ secrets.CONTROL_PLANE_PORT }}
+        run: |
+          set -euo pipefail
+          PORT="${SSH_PORT:-22}"
+          ssh -p "$PORT" -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} "
+            kubectl apply -f /tmp/node-health-watcher/namespace.yaml &&
+            kubectl apply -f /tmp/node-health-watcher/rbac.yaml &&
+            kubectl apply -f /tmp/node-health-watcher/configmap.yaml &&
+            kubectl apply -f /tmp/node-health-watcher/deployment.yaml &&
+            kubectl -n monitoring set image deployment/node-health-watcher node-health-watcher=${IMAGE_REPO}:${IMAGE_TAG} &&
+            kubectl -n monitoring rollout status deployment/node-health-watcher --timeout=120s
+          "
