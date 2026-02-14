@@ -24,7 +24,7 @@ class NodeHealthWatcher:
         self.airflow_password = os.getenv("AIRFLOW_PASSWORD", "")
         self.gha_dispatch_url = os.getenv("GHA_DISPATCH_URL", "").strip()
         self.gha_token = os.getenv("GHA_TOKEN", "").strip()
-        self.gha_event_type = os.getenv("GHA_EVENT_TYPE", "k3s-node-alert").strip()
+        self.gha_event_type = os.getenv("GHA_EVENT_TYPE", "k3s-alert").strip()
         self.watch_debounce_seconds = int(os.getenv("WATCH_DEBOUNCE_SECONDS", "5"))
         self.airflow_max_retries = int(os.getenv("AIRFLOW_MAX_RETRIES", "5"))
         self.airflow_timeout_seconds = int(os.getenv("AIRFLOW_TIMEOUT_SECONDS", "10"))
