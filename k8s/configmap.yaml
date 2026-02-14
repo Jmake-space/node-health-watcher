@@ -12,4 +12,5 @@ data:
   WATCH_DEBOUNCE_SECONDS: "5"
   AIRFLOW_MAX_RETRIES: "5"
   AIRFLOW_TIMEOUT_SECONDS: "10"
+  INCIDENT_LOG_PATH: /var/lib/node-health-watcher/incidents.ndjson
   LOG_LEVEL: INFO
