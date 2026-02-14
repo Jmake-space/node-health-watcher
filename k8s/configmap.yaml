@@ -8,7 +8,7 @@ data:
   AIRFLOW_BASE_URL: http://airflow-webserver.airflow.svc.cluster.local:8080
   AIRFLOW_DAG_ID: node_health_alert
   GHA_DISPATCH_URL: https://api.github.com/repos/Jmake-space/homelab-actions/dispatches
-  GHA_EVENT_TYPE: k3s-node-alert
+  GHA_EVENT_TYPE: k3s-alert
   WATCH_DEBOUNCE_SECONDS: "5"
   AIRFLOW_MAX_RETRIES: "5"
   AIRFLOW_TIMEOUT_SECONDS: "10"
