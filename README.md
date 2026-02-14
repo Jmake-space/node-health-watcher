@@ -47,7 +47,7 @@ Environment variables:
 - `AIRFLOW_USERNAME`
 - `AIRFLOW_PASSWORD`
 - `GHA_DISPATCH_URL` (example: `https://api.github.com/repos/Jmake-space/homelab-actions/dispatches`)
-- `GHA_EVENT_TYPE` (default `k3s-node-alert`)
+- `GHA_EVENT_TYPE` (default `k3s-alert`)
 - `GHA_TOKEN` (token allowed to call repository dispatch)
 - `WATCH_DEBOUNCE_SECONDS` (default `5`)
 - `AIRFLOW_MAX_RETRIES` (default `5`)
