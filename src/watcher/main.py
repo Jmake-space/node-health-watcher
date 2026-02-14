@@ -3,7 +3,8 @@ import logging
 import os
 import time
 from datetime import datetime, timezone
-from typing import Dict, Optional, Set
+from pathlib import Path
+from typing import Any, Dict, Optional, Set
 
 import requests
 from kubernetes import client, config, watch
@@ -27,6 +28,9 @@ class NodeHealthWatcher:
         self.watch_debounce_seconds = int(os.getenv("WATCH_DEBOUNCE_SECONDS", "5"))
         self.airflow_max_retries = int(os.getenv("AIRFLOW_MAX_RETRIES", "5"))
         self.airflow_timeout_seconds = int(os.getenv("AIRFLOW_TIMEOUT_SECONDS", "10"))
+        self.incident_log_path = Path(
+            os.getenv("INCIDENT_LOG_PATH", "/var/lib/node-health-watcher/incidents.ndjson").strip()
+        )
 
         self.node_states: Dict[str, str] = {}
         self.pending_down: Set[str] = set()
@@ -112,28 +116,77 @@ class NodeHealthWatcher:
         nodes_recovered = sorted(self.pending_recovered)
         nodes_down_current = sorted(name for name, status in self.node_states.items() if status != "True")
 
+        legacy_event = "mixed"
         if nodes_down and nodes_recovered:
             event = "mixed"
             status = "node-change"
         elif nodes_down:
             event = "incident"
             status = "node-down"
+            legacy_event = "incident"
         else:
-            event = "resolved"
+            event = "recovery"
             status = "node-recovered"
+            legacy_event = "resolved"
+
+        if event == "incident":
+            error_type = "node_not_ready"
+            error_code = "NODE_NOT_READY"
+            summary = f"Node incident in {self.cluster_name}: {','.join(nodes_down)}"
+        elif event == "recovery":
+            error_type = "node_recovered"
+            error_code = "NODE_RECOVERED"
+            summary = f"Node recovery in {self.cluster_name}: {','.join(nodes_recovered)}"
+        else:
+            error_type = "node_state_change"
+            error_code = "NODE_CHANGE"
+            summary = f"Node state changed in {self.cluster_name}"
 
         table_lines = ["node\tready_status"] + [f"{name}\t{self.node_states.get(name, 'Unknown')}" for name in sorted(self.node_states)]
+        details = f"nodes_down_new={','.join(nodes_down)};nodes_recovered={','.join(nodes_recovered)};nodes_down_current={','.join(nodes_down_current)}"
 
         return {
             "cluster": self.cluster_name,
+            "event_type": "node",
             "event": event,
             "status": status,
+            "service": "",
+            "error_type": error_type,
+            "error_code": error_code,
+            "summary": summary,
             "nodes_down": ",".join(nodes_down),
             "nodes_down_current": ",".join(nodes_down_current),
             "nodes_recovered": ",".join(nodes_recovered),
             "timestamp": utc_timestamp(),
             "nodes_table": "\n".join(table_lines),
+            "details": details,
+            "legacy_event": legacy_event,
         }
+
+    def append_incident_log(self, payload: Dict[str, str]) -> None:
+        if payload["event"] == "incident":
+            recovery_status = "open"
+        elif payload["event"] == "recovery":
+            recovery_status = "recovered"
+        else:
+            recovery_status = "partial"
+
+        record: Dict[str, Any] = {
+            "service": payload.get("service", ""),
+            "log_message": payload.get("summary", ""),
+            "error_type": payload.get("error_type", ""),
+            "error_code": payload.get("error_code", ""),
+            "datetime": payload.get("timestamp", utc_timestamp()),
+            "recovery_status": recovery_status,
+        }
+
+        try:
+            self.incident_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.incident_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, sort_keys=True))
+                handle.write("\n")
+        except Exception as exc:
+            self.log_event("incident_log_write_failed", error=str(exc), path=str(self.incident_log_path))
 
     def trigger_airflow(self, payload: Dict[str, str]) -> bool:
         if not self.airflow_base_url or not self.airflow_username or not self.airflow_password:
@@ -220,6 +273,7 @@ class NodeHealthWatcher:
             return
 
         payload = self.build_payload()
+        self.append_incident_log(payload)
         airflow_ok = self.trigger_airflow(payload)
         gha_ok = self.trigger_github_dispatch(payload)
         self.log_event("flush_dispatched", airflow_ok=airflow_ok, github_dispatch_ok=gha_ok, payload=payload)

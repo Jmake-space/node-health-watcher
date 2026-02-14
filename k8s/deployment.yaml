@@ -31,6 +31,8 @@ spec:
           volumeMounts:
             - name: watcher-code
               mountPath: /app
+            - name: watcher-state
+              mountPath: /var/lib/node-health-watcher
           resources:
             requests:
               cpu: 50m
@@ -42,3 +44,5 @@ spec:
         - name: watcher-code
           configMap:
             name: node-health-watcher-code
+        - name: watcher-state
+          emptyDir: {}
