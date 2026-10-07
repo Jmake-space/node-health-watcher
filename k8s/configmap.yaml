@@ -10,7 +10,11 @@ data:
   GHA_DISPATCH_URL: https://api.github.com/repos/Jmake-space/homelab-actions/dispatches
   GHA_EVENT_TYPE: k3s-alert
   WATCH_DEBOUNCE_SECONDS: "5"
+  DOWN_CONFIRM_SECONDS: "180"
+  RECOVERY_CONFIRM_SECONDS: "120"
+  DELIVERY_MAX_ATTEMPTS: "5"
   AIRFLOW_MAX_RETRIES: "5"
   AIRFLOW_TIMEOUT_SECONDS: "10"
-  INCIDENT_LOG_PATH: /var/lib/node-health-watcher/incidents.ndjson
+  INCIDENT_LOG_PATH: /var/lib/node-health-watcher/watcher/incidents.ndjson
+  STATE_PATH: /var/lib/node-health-watcher/watcher/state.json
   LOG_LEVEL: INFO

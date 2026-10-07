@@ -5,6 +5,9 @@ metadata:
   namespace: monitoring
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
+    rollingUpdate: null
   selector:
     matchLabels:
       app: node-health-watcher
@@ -45,4 +48,5 @@ spec:
           configMap:
             name: node-health-watcher-code
         - name: watcher-state
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: k3s-node-alert-state

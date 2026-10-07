@@ -1,0 +1,22 @@
+name: Node Health Watcher Checks
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run focused tests
+        run: |
+          set -euo pipefail
+          VENV="${RUNNER_TEMP}/node-health-watcher-tests-${GITHUB_RUN_ID}"
+          python3 -m venv "$VENV"
+          "$VENV/bin/pip" install -r requirements.txt
+          "$VENV/bin/python" -m unittest discover -s tests -v

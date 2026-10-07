@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from src.watcher.main import NodeHealthWatcher
 
@@ -9,10 +10,9 @@ class PhaseAPayloadTests(unittest.TestCase):
     def test_phase_a_payload_and_incident_log(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = os.path.join(tmpdir, "incidents.ndjson")
-            os.environ["CLUSTER_NAME"] = "pi-k3s"
-            os.environ["INCIDENT_LOG_PATH"] = log_path
-
-            watcher = NodeHealthWatcher()
+            with patch.dict(os.environ, {"CLUSTER_NAME": "pi-k3s", "INCIDENT_LOG_PATH": log_path,
+                                         "STATE_PATH": os.path.join(tmpdir, "state.json")}):
+                watcher = NodeHealthWatcher()
             watcher.node_states = {"n1": "False", "n2": "True"}
             watcher.pending_down = {"n1"}
             watcher.pending_recovered = set()

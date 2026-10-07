@@ -43,6 +43,13 @@ jobs:
           set -euo pipefail
           PORT="${SSH_PORT:-22}"
           ssh -p "$PORT" -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} "
+            rm -f /tmp/node-health-watcher/rollback.yaml
+            if sudo k3s kubectl -n monitoring get deployment/node-health-watcher >/dev/null 2>&1; then
+              sudo k3s kubectl -n monitoring get deployment/node-health-watcher \
+                configmap/node-health-watcher-code configmap/node-health-watcher-config \
+                -o yaml > /tmp/node-health-watcher/rollback.yaml || exit 1
+              sha256sum /tmp/node-health-watcher/rollback.yaml
+            fi
             sudo k3s kubectl apply -f /tmp/node-health-watcher/namespace.yaml &&
             sudo k3s kubectl apply -f /tmp/node-health-watcher/rbac.yaml &&
             sudo k3s kubectl apply -f /tmp/node-health-watcher/configmap.yaml &&
@@ -51,5 +58,26 @@ jobs:
               --from-file=requirements.txt=/tmp/node-health-watcher/requirements.txt \
               --dry-run=client -o yaml | sudo k3s kubectl apply -f - &&
             sudo k3s kubectl apply -f /tmp/node-health-watcher/deployment.yaml &&
+            sudo k3s kubectl -n monitoring rollout restart deployment/node-health-watcher &&
             sudo k3s kubectl -n monitoring rollout status deployment/node-health-watcher --timeout=120s
           "
+
+      - name: Collect rollback evidence
+        if: always()
+        env:
+          SSH_HOST: ${{ secrets.CONTROL_PLANE_HOST }}
+          SSH_USER: ${{ secrets.CONTROL_PLANE_USER }}
+          SSH_PORT: ${{ secrets.CONTROL_PLANE_PORT }}
+        run: |
+          PORT="${SSH_PORT:-22}"
+          if ssh -p "$PORT" -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST} 'test -f /tmp/node-health-watcher/rollback.yaml'; then
+            scp -P "$PORT" -o StrictHostKeyChecking=no ${SSH_USER}@${SSH_HOST}:/tmp/node-health-watcher/rollback.yaml ./rollback.yaml
+          fi
+
+      - name: Upload rollback evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-health-watcher-rollback-${{ github.run_id }}
+          path: rollback.yaml
+          if-no-files-found: warn
