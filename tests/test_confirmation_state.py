@@ -23,6 +23,7 @@ class ConfirmationTests(unittest.TestCase):
             "STATE_PATH": self.temp.name + "/state.json", "DOWN_CONFIRM_SECONDS": "180",
             "RECOVERY_CONFIRM_SECONDS": "120", "WATCH_DEBOUNCE_SECONDS": "5",
             "DELIVERY_MAX_ATTEMPTS": "3", "GHA_DISPATCH_URL": "https://example.invalid/dispatch",
+            "NODE_PROBE_ENABLED": "false",
             "GHA_TOKEN": "test", "AIRFLOW_BASE_URL": "http://example.invalid",
             "AIRFLOW_USERNAME": "test", "AIRFLOW_PASSWORD": "test",
         })
@@ -45,8 +46,13 @@ class ConfirmationTests(unittest.TestCase):
         self.w.flush_if_due()
 
     def advance(self, seconds):
-        self.now += seconds
-        self.w.flush_if_due()
+        target = self.now + seconds
+        while self.now < target:
+            self.now = min(target, self.now + 5)
+            # Model the production five-second relist cadence, not an unobserved gap.
+            for name in list(self.w.observed):
+                self.w.handle_node_update(node(name, self.w.node_states[name]))
+            self.w.flush_if_due()
 
     def incident(self, name="n1"):
         self.observe(name, "False")
