@@ -18,8 +18,13 @@ class DeploymentContractTests(unittest.TestCase):
                       if volume["name"] == "watcher-state")
         self.assertEqual(volume["persistentVolumeClaim"]["claimName"], "k3s-node-alert-state")
         config = yaml.safe_load((ROOT / "k8s/configmap.yaml").read_text())["data"]
-        self.assertEqual(config["DOWN_CONFIRM_SECONDS"], "180")
-        self.assertEqual(config["RECOVERY_CONFIRM_SECONDS"], "120")
+        self.assertEqual(config["AIRFLOW_BASE_URL"], "")
+        self.assertEqual(config["DOWN_CONFIRM_SECONDS"], "600")
+        self.assertEqual(config["RECOVERY_CONFIRM_SECONDS"], "900")
+        self.assertEqual(config["NODE_PROBE_ENABLED"], "true")
+        self.assertEqual(config["HOST_UNREACHABLE_CONFIRM_SECONDS"], "300")
+        self.assertEqual(config["CLUSTER_UNAVAILABLE_CONFIRM_SECONDS"], "1800")
+        self.assertLess(int(config["NODE_PROBE_INTERVAL_SECONDS"]), int(config["MAX_OBSERVATION_GAP_SECONDS"]))
         self.assertEqual(config["STATE_PATH"], "/var/lib/node-health-watcher/watcher/state.json")
         self.assertEqual(config["INCIDENT_LOG_PATH"], "/var/lib/node-health-watcher/watcher/incidents.ndjson")
 

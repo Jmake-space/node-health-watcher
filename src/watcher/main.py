@@ -1,6 +1,8 @@
+import ipaddress
 import json
 import logging
 import os
+import socket
 import time
 import uuid
 from datetime import datetime, timezone
@@ -27,8 +29,14 @@ class NodeHealthWatcher:
         self.gha_token = os.getenv("GHA_TOKEN", "").strip()
         self.gha_event_type = os.getenv("GHA_EVENT_TYPE", "k3s-alert").strip()
         self.watch_debounce_seconds = int(os.getenv("WATCH_DEBOUNCE_SECONDS", "5"))
-        self.down_confirm_seconds = int(os.getenv("DOWN_CONFIRM_SECONDS", "180"))
-        self.recovery_confirm_seconds = int(os.getenv("RECOVERY_CONFIRM_SECONDS", "120"))
+        self.down_confirm_seconds = int(os.getenv("DOWN_CONFIRM_SECONDS", "600"))
+        self.recovery_confirm_seconds = int(os.getenv("RECOVERY_CONFIRM_SECONDS", "900"))
+        self.node_probe_enabled = os.getenv("NODE_PROBE_ENABLED", "false").lower() == "true"
+        self.node_probe_interval_seconds = int(os.getenv("NODE_PROBE_INTERVAL_SECONDS", "30"))
+        self.node_probe_timeout_seconds = float(os.getenv("NODE_PROBE_TIMEOUT_SECONDS", "1"))
+        self.host_unreachable_confirm_seconds = int(os.getenv("HOST_UNREACHABLE_CONFIRM_SECONDS", "300"))
+        self.cluster_unavailable_confirm_seconds = int(os.getenv("CLUSTER_UNAVAILABLE_CONFIRM_SECONDS", "1800"))
+        self.max_observation_gap_seconds = int(os.getenv("MAX_OBSERVATION_GAP_SECONDS", "60"))
         self.airflow_max_retries = int(os.getenv("AIRFLOW_MAX_RETRIES", "5"))
         self.delivery_max_attempts = int(os.getenv("DELIVERY_MAX_ATTEMPTS", str(self.airflow_max_retries)))
         self.airflow_timeout_seconds = int(os.getenv("AIRFLOW_TIMEOUT_SECONDS", "10"))
@@ -42,7 +50,12 @@ class NodeHealthWatcher:
         self.flush_deadline: Optional[float] = None
         self.state_path = Path(os.getenv("STATE_PATH", str(self.incident_log_path.with_name("state.json"))))
         self.observed_since: Dict[str, float] = {}
+        self.observed_at: Dict[str, float] = {}
         self.observed: Set[str] = set()
+        self.node_addresses: Dict[str, str] = {}
+        self.probe_results: Dict[str, dict] = {}
+        self.probed_at: Dict[str, float] = {}
+        self.unreachable_since: Dict[str, float] = {}
         self.confirmed_down: Set[str] = set()
         self.announced: Dict[str, Set[str]] = {"airflow": set(), "github": set()}
         self.outbox: list = []
@@ -52,6 +65,13 @@ class NodeHealthWatcher:
             raise ValueError("Confirmation and debounce thresholds must be nonnegative")
         if self.delivery_max_attempts < 1:
             raise ValueError("DELIVERY_MAX_ATTEMPTS must be positive")
+        if min(self.node_probe_interval_seconds, self.node_probe_timeout_seconds,
+               self.max_observation_gap_seconds) <= 0:
+            raise ValueError("Probe intervals, timeouts and observation gap must be positive")
+        if min(self.host_unreachable_confirm_seconds, self.cluster_unavailable_confirm_seconds) < 0:
+            raise ValueError("Host and cluster confirmation thresholds must be nonnegative")
+        if self.node_probe_interval_seconds >= self.max_observation_gap_seconds:
+            raise ValueError("Probe interval must be shorter than the observation gap")
         self.load_state()
 
     def load_state(self) -> None:
@@ -131,6 +151,9 @@ class NodeHealthWatcher:
         self.node_states.pop(name, None)
         self.observed.discard(name)
         self.observed_since.pop(name, None)
+        self.observed_at.pop(name, None)
+        self.node_addresses.pop(name, None)
+        self.clear_probe(name)
         self.confirmed_down.discard(name)
         self.pending_down.discard(name)
         self.pending_recovered.discard(name)
@@ -156,9 +179,30 @@ class NodeHealthWatcher:
         current = self.ready_status(node)
 
         previous = self.node_states.get(name)
-        if name not in self.observed or (previous == "True") != (current == "True"):
-            self.observed_since[name] = time.monotonic()
+        now = time.monotonic()
+        interrupted = now - self.observed_at.get(name, now) > self.max_observation_gap_seconds
+        if name not in self.observed or interrupted or (previous == "True") != (current == "True"):
+            self.observed_since[name] = now
+            self.clear_probe(name)
+        addresses = []
+        for address in getattr(node.status, "addresses", None) or []:
+            if address.type != "InternalIP":
+                continue
+            try:
+                addresses.append(ipaddress.ip_address(address.address))
+            except ValueError:
+                continue
+        address = str(min(addresses, key=lambda item: (item.version, int(item)))) if addresses else None
+        if address != self.node_addresses.get(name):
+            self.clear_probe(name)
+            if name in self.observed:
+                self.observed_since[name] = now
+        if address:
+            self.node_addresses[name] = address
+        else:
+            self.node_addresses.pop(name, None)
         self.observed.add(name)
+        self.observed_at[name] = now
         self.node_states[name] = current
         if previous != current:
             self.log_event("node_observed", node=name, previous=previous, current=current)
@@ -166,10 +210,80 @@ class NodeHealthWatcher:
 
     def direction_confirmed(self, name: str, down: bool) -> bool:
         threshold = self.down_confirm_seconds if down else self.recovery_confirm_seconds
-        return (name in self.observed and (self.node_states[name] != "True") == down
-                and time.monotonic() - self.observed_since[name] >= threshold)
+        now = time.monotonic()
+        ready = (name in self.observed and (self.node_states[name] != "True") == down
+                 and now - self.observed_at[name] <= self.max_observation_gap_seconds
+                 and now - self.observed_since[name] >= threshold)
+        return bool(ready and (not down or not self.node_probe_enabled or self.outage_reason(name)))
+
+    def clear_probe(self, name: str) -> None:
+        self.probe_results.pop(name, None)
+        self.probed_at.pop(name, None)
+        self.unreachable_since.pop(name, None)
+
+    def probe_host(self, address: str) -> dict:
+        ports = []
+        for port in (10250, 22):
+            try:
+                with socket.create_connection((address, port), timeout=self.node_probe_timeout_seconds):
+                    pass
+                return {"reachable": True, "address": address, "port": port, "response": "tcp_connected"}
+            except ConnectionRefusedError:
+                # A refusal is a host response, not evidence of a powered-off machine.
+                return {"reachable": True, "address": address, "port": port, "response": "tcp_refused"}
+            except OSError as exc:
+                ports.append({"port": port, "error": type(exc).__name__})
+        return {"reachable": False, "address": address, "ports": ports}
+
+    def refresh_probes(self) -> None:
+        if not self.node_probe_enabled:
+            return
+        for name in sorted(self.observed):
+            now = time.monotonic()
+            if self.node_states[name] == "True" or now - self.observed_at[name] > self.max_observation_gap_seconds:
+                continue
+            if now - self.probed_at.get(name, -float("inf")) < self.node_probe_interval_seconds:
+                continue
+            previous_at = self.probed_at.get(name)
+            previous = self.probe_results.get(name)
+            address = self.node_addresses.get(name)
+            result = self.probe_host(address) if address else {"reachable": None, "response": "no_valid_internal_ip"}
+            completed_at = time.monotonic()
+            if result["reachable"] is False:
+                if previous_at is None or completed_at - previous_at > self.max_observation_gap_seconds:
+                    self.unreachable_since[name] = completed_at
+                self.unreachable_since.setdefault(name, completed_at)
+            else:
+                self.unreachable_since.pop(name, None)
+            self.probe_results[name] = result
+            self.probed_at[name] = completed_at
+            if previous != result:
+                self.log_event("node_reachability_observed", node=name, **result)
+
+    def outage_reason(self, name: str) -> Optional[str]:
+        now = time.monotonic()
+        if now - self.probed_at.get(name, -float("inf")) > self.max_observation_gap_seconds:
+            return None
+        probe = self.probe_results[name]
+        if (probe["reachable"] is False and name in self.unreachable_since
+                and now - self.unreachable_since[name] >= self.host_unreachable_confirm_seconds):
+            return "host_unreachable"
+        if now - self.observed_since[name] >= self.cluster_unavailable_confirm_seconds:
+            return "cluster_unavailable_host_responding" if probe["reachable"] else "cluster_unavailable_probe_inconclusive"
+        return None
+
+    def reset_observations(self) -> None:
+        # Watch gaps cannot provide evidence of continuous unavailability or recovery.
+        self.observed.clear()
+        self.observed_since.clear()
+        self.observed_at.clear()
+        self.node_addresses.clear()
+        self.probe_results.clear()
+        self.probed_at.clear()
+        self.unreachable_since.clear()
 
     def confirm_transitions(self) -> None:
+        self.refresh_probes()
         changed = False
         for name in self.observed:
             down = self.node_states[name] != "True"
@@ -195,7 +309,7 @@ class NodeHealthWatcher:
                       recovered: Optional[Set[str]] = None) -> Dict[str, str]:
         nodes_down = sorted(self.pending_down if down is None else down)
         nodes_recovered = sorted(self.pending_recovered if recovered is None else recovered)
-        nodes_down_current = sorted(name for name, status in self.node_states.items() if status != "True")
+        nodes_down_current = sorted((self.confirmed_down | set(nodes_down)) - set(nodes_recovered))
 
         legacy_event = "mixed"
         if nodes_down and nodes_recovered:
@@ -214,6 +328,10 @@ class NodeHealthWatcher:
             error_type = "node_not_ready"
             error_code = "NODE_NOT_READY"
             summary = f"Node incident in {self.cluster_name}: {','.join(nodes_down)}"
+            if self.node_probe_enabled:
+                unreachable = all(self.outage_reason(name) == "host_unreachable" for name in nodes_down)
+                label = "Nodes persistently unreachable" if unreachable else "Nodes persistently unavailable to Kubernetes"
+                summary = f"{label} in {self.cluster_name}: {','.join(nodes_down)}"
         elif event == "recovery":
             error_type = "node_recovered"
             error_code = "NODE_RECOVERED"
@@ -225,6 +343,16 @@ class NodeHealthWatcher:
 
         table_lines = ["node\tready_status"] + [f"{name}\t{self.node_states.get(name, 'Unknown')}" for name in sorted(self.node_states)]
         details = f"nodes_down_new={','.join(nodes_down)};nodes_recovered={','.join(nodes_recovered)};nodes_down_current={','.join(nodes_down_current)}"
+        diagnostics = {}
+        if self.node_probe_enabled:
+            for name in nodes_down + nodes_recovered:
+                diagnostics[name] = {
+                    "classification": self.outage_reason(name) if name in nodes_down else "sustained_ready_recovery",
+                    "ready_status": self.node_states.get(name, "Unknown"),
+                    "observed_for_seconds": int(time.monotonic() - self.observed_since.get(name, time.monotonic())),
+                    "probe": self.probe_results.get(name, {}),
+                    "power_off_or_reboot_proven": False,
+                }
 
         return {
             "cluster": self.cluster_name,
@@ -241,6 +369,7 @@ class NodeHealthWatcher:
             "timestamp": utc_timestamp(),
             "nodes_table": "\n".join(table_lines),
             "details": details,
+            "node_diagnostics": json.dumps(diagnostics, sort_keys=True),
             "legacy_event": legacy_event,
         }
 
@@ -310,6 +439,7 @@ class NodeHealthWatcher:
                 "nodes_table": payload.get("nodes_table", ""),
                 "legacy_event": payload.get("legacy_event", ""),
                 "raw_details": payload.get("details", ""),
+                "node_diagnostics": json.loads(payload.get("node_diagnostics", "{}")),
             },
         }
 
@@ -413,6 +543,8 @@ class NodeHealthWatcher:
                     self.save_state()
                     continue
                 delivery["attempts"] += 1
+                # Reachability may change while delivery retries; do not resend stale diagnosis.
+                delivery["payload"] = self.build_payload(down, recovered)
                 self.save_state()
                 trigger = self.trigger_airflow if transport == "airflow" else self.trigger_github_dispatch
                 accepted = trigger(delivery["payload"])
@@ -467,6 +599,7 @@ class NodeHealthWatcher:
                     self.handle_node_update(node)
                     self.flush_if_due()
             except Exception as exc:
+                self.reset_observations()
                 self.log_event("watch_stream_error", error=str(exc))
                 time.sleep(2)
             finally:
